@@ -107,8 +107,11 @@ def load_hf_dataset(dataset_name, split='train', text_col=None, label_col=None,
 
     print(f"  Text column: '{text_col}', Label column: '{label_col}'")
 
+    all_texts = [str(t) for t in ds[text_col]]
+    all_labels_raw = list(ds[label_col])
+
     import random as _rng
-    all_indices = list(range(len(ds)))
+    all_indices = list(range(len(all_texts)))
     _rng.shuffle(all_indices)
     if max_samples:
         all_indices = all_indices[:max_samples * 3]
@@ -118,9 +121,8 @@ def load_hf_dataset(dataset_name, split='train', text_col=None, label_col=None,
     for idx in all_indices:
         if max_samples and len(texts) >= max_samples:
             break
-        row = ds[idx]
-        text = str(row[text_col])
-        label = row[label_col]
+        text = all_texts[idx]
+        label = all_labels_raw[idx]
         if hasattr(label, '__class__') and 'ClassLabel' in str(type(label)):
             label = int(label)
         elif isinstance(label, str):
