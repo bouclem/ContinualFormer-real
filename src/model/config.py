@@ -1,0 +1,21 @@
+PAD_ID = 0
+UNK_ID = 1
+MAX_VOCAB = 250
+MAX_LEN = 128
+
+
+class ContinualConfig:
+    DIM = 64
+    FFN_HIDDEN = 128
+    HEADS = 2
+    LAYERS = 2
+    CLASSES_PER_TASK = 10
+    VOCAB_SIZE = MAX_VOCAB
+    MAX_LEN = 48
+    FREEZE_RATIO = 0.3
+    EXPAND_THRESHOLD = 0.2
+    EXPAND_RATIO = 0.2
+    EPOCHS = 50
+    LR = 0.001
+    BATCH_SIZE = 64
+    DROPOUT = 0.1
