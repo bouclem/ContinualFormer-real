@@ -28,9 +28,18 @@ class ContinualFormer(ContinualConfig):
         self.heads = {}
         self.tasks_learned = []
 
-    def _get_or_create_head(self, task_id):
+    def _get_or_create_head(self, task_id, num_classes=None):
+        if num_classes is None:
+            num_classes = self.CLASSES_PER_TASK
         if task_id not in self.heads:
-            self.heads[task_id] = nn.Linear(self.DIM, self.CLASSES_PER_TASK).to(self.device)
+            self.heads[task_id] = nn.Linear(self.DIM, num_classes).to(self.device)
+        elif self.heads[task_id].out_features < num_classes:
+            old_head = self.heads[task_id]
+            new_head = nn.Linear(self.DIM, num_classes).to(self.device)
+            with torch.no_grad():
+                new_head.weight[:old_head.out_features] = old_head.weight.data
+                new_head.bias[:old_head.out_features] = old_head.bias.data
+            self.heads[task_id] = new_head
         return self.heads[task_id]
 
     def _all_modules(self):
@@ -137,12 +146,13 @@ class ContinualFormer(ContinualConfig):
             layer.ffn.freeze_neurons(old_frozen_idx)
         print(f"  Expanded FFN: {old_h} -> {new_h} neurons")
 
-    def train(self, texts, labels, task_id, val_texts=None, val_labels=None, verbose=True):
+    def train(self, texts, labels, task_id, val_texts=None, val_labels=None, verbose=True, checkpoint_path=None):
         old_vs = len(self.vocab)
         self.vocab = build_vocab(texts, max_vocab=self.VOCAB_SIZE, existing_vocab=self.vocab)
         if verbose:
             print(f"  Vocab: {old_vs} -> {len(self.vocab)} words")
-        self._get_or_create_head(task_id)
+        num_classes = max(max(labels) + 1, self.CLASSES_PER_TASK)
+        self._get_or_create_head(task_id, num_classes)
         optimizer = torch.optim.Adam(self._all_param_list(), lr=self.LR)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.EPOCHS, eta_min=self.LR * 0.1)
         y = torch.tensor(labels, dtype=torch.long, device=self.device)
@@ -179,6 +189,8 @@ class ContinualFormer(ContinualConfig):
             if verbose and (epoch % 10 == 0 or epoch == self.EPOCHS - 1):
                 tp = self.trainable_param_count()
                 print(f"  Task {task_id} Epoch {epoch:3d} | loss={total_loss/max(nb,1):.4f} | val_acc={va:.4f} | trainable={tp}")
+            if checkpoint_path and (epoch + 1) % 10 == 0:
+                self.save(checkpoint_path)
         frozen = self._freeze_neurons(texts, task_id)
         if verbose:
             print(f"  Frozen {frozen} neurons after task {task_id}")

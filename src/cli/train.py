@@ -43,7 +43,7 @@ def cmd_train(args):
     train_t, train_l, val_t, val_l = split_data(texts, labels)
     print(f"Train: {len(train_t)}, Val: {len(val_t)}")
 
-    model.train(train_t, train_l, task_id=args.task, val_texts=val_t, val_labels=val_l)
+    model.train(train_t, train_l, task_id=args.task, val_texts=val_t, val_labels=val_l, checkpoint_path=model_path)
 
     if val_t:
         acc = model.evaluate(val_t, val_l, args.task)

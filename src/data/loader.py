@@ -14,7 +14,7 @@ DATA_DIR = os.path.join(_PROJECT_ROOT, 'data')
 
 
 def load_hf_dataset(dataset_name, split='train', text_col=None, label_col=None,
-                     subset=None, max_samples=None):
+                     subset=None, max_samples=None, limit=None):
     """Load a dataset from HuggingFace Hub.
 
     Args:
@@ -36,10 +36,35 @@ def load_hf_dataset(dataset_name, split='train', text_col=None, label_col=None,
 
     print(f"Loading HF dataset: {dataset_name} (split={split})")
     os.makedirs(DATA_DIR, exist_ok=True)
-    if subset:
-        ds = load_dataset(dataset_name, subset, split=split, cache_dir=DATA_DIR)
-    else:
-        ds = load_dataset(dataset_name, split=split, cache_dir=DATA_DIR)
+
+    # Auto-detect config name if not provided
+    if not subset:
+        try:
+            from datasets import get_dataset_config_names
+            configs = get_dataset_config_names(dataset_name, cache_dir=DATA_DIR)
+            if configs and configs != ['default']:
+                subset = 'main' if 'main' in configs else configs[0]
+                print(f"  Auto-selected config: '{subset}' (available: {configs})")
+        except Exception:
+            pass
+
+    # Load with split fallback
+    try:
+        if subset:
+            ds = load_dataset(dataset_name, subset, split=split, cache_dir=DATA_DIR)
+        else:
+            ds = load_dataset(dataset_name, split=split, cache_dir=DATA_DIR)
+    except ValueError as e:
+        if 'Unknown split' in str(e) or 'Should be one of' in str(e):
+            if subset:
+                all_ds = load_dataset(dataset_name, subset, cache_dir=DATA_DIR)
+            else:
+                all_ds = load_dataset(dataset_name, cache_dir=DATA_DIR)
+            available = list(all_ds.keys())
+            print(f"  Split '{split}' not available. Using '{available[0]}' (available: {available})")
+            ds = all_ds[available[0]]
+        else:
+            raise
 
     print(f"  Loaded {len(ds)} rows. Columns: {ds.column_names}")
 
@@ -68,6 +93,11 @@ def load_hf_dataset(dataset_name, split='train', text_col=None, label_col=None,
         if label_col is None:
             for col in ds.column_names:
                 if col != text_col and not isinstance(ds[0][col], str):
+                    label_col = col
+                    break
+        if label_col is None:
+            for col in ds.column_names:
+                if col != text_col:
                     label_col = col
                     break
         if label_col is None:
@@ -107,7 +137,7 @@ def load_hf_dataset(dataset_name, split='train', text_col=None, label_col=None,
         else:
             label = int(label)
 
-        if label < 0 or label >= 10:
+        if limit is not None and (label < 0 or label >= limit):
             continue
 
         texts.append(text)
@@ -172,6 +202,7 @@ def load_data_smart(args):
             label_col=getattr(args, 'label_col', None),
             subset=getattr(args, 'subset', None),
             max_samples=getattr(args, 'max_samples', None),
+            limit=getattr(args, 'limit', None),
         )
     elif hasattr(args, 'data') and args.data:
         return load_data(args.data)

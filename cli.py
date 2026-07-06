@@ -63,6 +63,7 @@ def main():
     p_train.add_argument('--split', default='train', help='HF dataset split (train, test, validation)')
     p_train.add_argument('--subset', default=None, help='HF dataset subset/config name')
     p_train.add_argument('--max-samples', type=int, default=None, help='Limit number of samples')
+    p_train.add_argument('--limit', type=int, default=None, help='Max label classes to keep (default: no limit)')
 
     # predict
     p_pred = subparsers.add_parser('predict', help='Predict labels')
@@ -82,6 +83,7 @@ def main():
     p_eval.add_argument('--split', default='test', help='HF dataset split')
     p_eval.add_argument('--subset', default=None, help='HF dataset subset/config name')
     p_eval.add_argument('--max-samples', type=int, default=None, help='Limit number of samples')
+    p_eval.add_argument('--limit', type=int, default=None, help='Max label classes to keep (default: no limit)')
 
     # save
     p_save = subparsers.add_parser('save', help='Save model')
