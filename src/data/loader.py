@@ -146,7 +146,9 @@ def load_hf_dataset(dataset_name, split='train', text_col=None, label_col=None,
     unique_labels = sorted(set(labels))
     print(f"  Extracted {len(texts)} samples. Labels: {unique_labels}")
     if hasattr(load_hf_dataset, '_label_map') and load_hf_dataset._label_map:
-        print(f"  Label mapping: {load_hf_dataset._label_map}")
+        lm = load_hf_dataset._label_map
+        preview = dict(list(lm.items())[:5])
+        print(f"  Label mapping: {len(lm)} classes. First 5: {preview}")
 
     return texts, labels
 
