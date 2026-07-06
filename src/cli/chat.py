@@ -28,43 +28,41 @@ def cmd_predict(args):
     model = _load_model(args)
 
     if args.text:
-        pred = model.predict(args.text, task_id=args.task)
-        probs = model.predict_proba(args.text, task_id=args.task)
+        output = model.generate(args.text, max_new_tokens=getattr(args, 'max_tokens', 50),
+                                temperature=getattr(args, 'temperature', 1.0))
         print(f"Input: {args.text}")
-        print(f"Predicted label: {pred}")
-        print(f"Probabilities: {[f'{p:.3f}' for p in probs]}")
+        print(f"Generated: {output}")
     elif args.file:
         with open(args.file, 'r', encoding='utf-8') as f:
             texts = [line.strip() for line in f if line.strip()]
-        preds = model.predict(texts, task_id=args.task)
-        for t, p in zip(texts, preds):
-            print(f"  {p}  {t[:80]}")
+        for t in texts:
+            output = model.generate(t, max_new_tokens=getattr(args, 'max_tokens', 50),
+                                    temperature=getattr(args, 'temperature', 1.0))
+            print(f"  {output}")
 
 
 def cmd_chat(args):
-    """Interactive chat mode — type text and get predictions in real time."""
+    """Interactive chat mode — type text and get generations in real time."""
     model = _load_model(args)
 
     print("=" * 60)
-    print("CONTINUAL TEXT MODEL -- CHAT MODE")
+    print("CONTINUALFORMER — CHAT MODE")
     print("=" * 60)
-    print(f"Task: {args.task}")
     print(f"Model: {args.model or '(untrained)'}")
-    print(f"Classes per task: {model.CLASSES_PER_TASK}")
+    print(f"Params: {model.param_count()}")
     print()
-    print("Type text to classify. Commands:")
+    print("Type a prompt to generate text. Commands:")
     print("  :quit   -- exit chat")
-    print("  :task N -- switch to task N")
-    print("  :probs  -- toggle showing probabilities")
     print("  :info   -- show model info")
+    print("  :temp T -- set temperature (0 = greedy, 1 = creative)")
     print()
 
-    show_probs = True
-    task_id = args.task
+    temperature = getattr(args, 'temperature', 1.0)
+    max_tokens = getattr(args, 'max_tokens', 50)
 
     while True:
         try:
-            text = input(f"[task {task_id}] > ").strip()
+            text = input("> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nBye!")
             break
@@ -74,32 +72,24 @@ def cmd_chat(args):
 
         if text.startswith(':'):
             cmd = text.lower()
-            if cmd == ':quit' or cmd == ':q' or cmd == ':exit':
+            if cmd in (':quit', ':q', ':exit'):
                 print("Bye!")
                 break
-            elif cmd.startswith(':task'):
+            elif cmd.startswith(':temp'):
                 parts = cmd.split()
                 if len(parts) >= 2:
                     try:
-                        task_id = int(parts[1])
-                        print(f"Switched to task {task_id}")
+                        temperature = float(parts[1])
+                        print(f"Temperature set to {temperature}")
                     except ValueError:
-                        print("Invalid task ID")
+                        print("Invalid temperature")
                 else:
-                    print(f"Current task: {task_id}")
-            elif cmd == ':probs':
-                show_probs = not show_probs
-                print(f"Probabilities: {'ON' if show_probs else 'OFF'}")
+                    print(f"Current temperature: {temperature}")
             elif cmd == ':info':
                 model.info()
             else:
                 print(f"Unknown command: {text}")
             continue
 
-        pred = model.predict(text, task_id=task_id)
-        print(f"  -> Label: {pred}")
-
-        if show_probs:
-            probs = model.predict_proba(text, task_id=task_id)
-            prob_str = "  ".join(f"[{i}]={p:.3f}" for i, p in enumerate(probs))
-            print(f"     {prob_str}")
+        output = model.generate(text, max_new_tokens=max_tokens, temperature=temperature)
+        print(f"  {output}")
