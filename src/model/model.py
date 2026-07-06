@@ -66,13 +66,17 @@ class ContinualFormer(ContinualConfig):
 
     def _encode(self, texts):
         B = len(texts)
-        ids = torch.zeros(B, self.MAX_LEN, dtype=torch.long, device=self.device)
-        mask = torch.zeros(B, self.MAX_LEN, device=self.device)
-        for i, t in enumerate(texts):
+        ids_list = []
+        mask_list = []
+        for t in texts:
             words = normalize_text(t)[:self.MAX_LEN]
-            for j, w in enumerate(words):
-                ids[i, j] = self.vocab.get(w, UNK_ID)
-                mask[i, j] = 1.0
+            row_ids = [self.vocab.get(w, UNK_ID) for w in words]
+            row_ids += [PAD_ID] * (self.MAX_LEN - len(row_ids))
+            ids_list.append(row_ids[:self.MAX_LEN])
+            m = [1.0] * min(len(words), self.MAX_LEN) + [0.0] * (self.MAX_LEN - min(len(words), self.MAX_LEN))
+            mask_list.append(m)
+        ids = torch.tensor(ids_list, dtype=torch.long, device=self.device)
+        mask = torch.tensor(mask_list, dtype=torch.float, device=self.device)
         return ids, mask
 
     def _forward(self, texts, task_id):
@@ -87,8 +91,7 @@ class ContinualFormer(ContinualConfig):
         pooled = (x * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp(min=1)
         return self._get_or_create_head(task_id)(pooled)
 
-    def _freeze_neurons(self, texts, task_id):
-        ids, mask = self._encode(texts)
+    def _freeze_neurons_ids(self, ids, mask, task_id):
         pos = torch.arange(self.MAX_LEN, device=self.device).unsqueeze(0).expand(ids.size(0), -1)
         x = self.embedding(ids) + self.pos_emb(pos)
         frozen_count = 0
@@ -108,6 +111,10 @@ class ContinualFormer(ContinualConfig):
             frozen_count += len(freeze_idx)
             x = layer(x, mask)
         return frozen_count
+
+    def _freeze_neurons(self, texts, task_id):
+        ids, mask = self._encode(texts)
+        return self._freeze_neurons_ids(ids, mask, task_id)
 
     def _check_and_expand(self):
         expanded = False
@@ -160,6 +167,11 @@ class ContinualFormer(ContinualConfig):
 
         all_ids, all_mask = self._encode(texts)
 
+        val_ids = None
+        val_mask = None
+        if val_texts:
+            val_ids, val_mask = self._encode(val_texts)
+
         for epoch in range(self.EPOCHS):
             self.embedding.train()
             self.pos_emb.train()
@@ -184,20 +196,46 @@ class ContinualFormer(ContinualConfig):
                 nb += 1
             scheduler.step()
             va = 0.0
-            if val_texts:
-                va = self.evaluate(val_texts, val_labels, task_id)
+            if val_ids is not None:
+                va = self._evaluate_ids(val_ids, val_mask, val_labels, task_id)
             if verbose and (epoch % 10 == 0 or epoch == self.EPOCHS - 1):
                 tp = self.trainable_param_count()
                 print(f"  Task {task_id} Epoch {epoch:3d} | loss={total_loss/max(nb,1):.4f} | val_acc={va:.4f} | trainable={tp}")
             if checkpoint_path and (epoch + 1) % 10 == 0:
                 self.save(checkpoint_path)
-        frozen = self._freeze_neurons(texts, task_id)
+        frozen = self._freeze_neurons_ids(all_ids, all_mask, task_id)
         if verbose:
             print(f"  Frozen {frozen} neurons after task {task_id}")
         if self._check_and_expand() and verbose:
             print(f"  Model expanded. New param count: {self.param_count()}")
         if task_id not in self.tasks_learned:
             self.tasks_learned.append(task_id)
+
+    def _evaluate_ids(self, ids, mask, labels, task_id):
+        self.embedding.eval()
+        self.pos_emb.eval()
+        for l in self.layers:
+            l.eval()
+        for h in self.heads.values():
+            h.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for i in range(0, len(labels), 128):
+                bi = slice(i, i + 128)
+                bx_ids = ids[bi]
+                bx_mask = mask[bi]
+                by = torch.tensor(labels[i:i+128], dtype=torch.long, device=self.device)
+                pred = self._forward_ids(bx_ids, bx_mask, task_id).argmax(1)
+                correct += (pred == by).sum().item()
+                total += len(by)
+        self.embedding.train()
+        self.pos_emb.train()
+        for l in self.layers:
+            l.train()
+        for h in self.heads.values():
+            h.train()
+        return correct / max(total, 1)
 
     def evaluate(self, texts, labels, task_id):
         self.embedding.eval()
