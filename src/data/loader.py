@@ -13,20 +13,20 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 DATA_DIR = os.path.join(_PROJECT_ROOT, 'data')
 
 
-def load_hf_dataset(dataset_name, split='train', text_col=None, label_col=None,
+def load_hf_dataset(dataset_name, split='train', text_col=None,
                      subset=None, max_samples=None, limit=None):
-    """Load a dataset from HuggingFace Hub.
+    """Load a dataset from HuggingFace Hub (text only, for language modeling).
 
     Args:
         dataset_name: HF dataset name in 'user/dataset_name' format (required)
         split: Which split to load ('train', 'test', 'validation')
         text_col: Column name containing text (auto-detect if None)
-        label_col: Column name containing labels (auto-detect if None)
         subset: Subset/config name for datasets with multiple configs
         max_samples: Limit number of samples loaded
+        limit: Max number of samples to keep
 
     Returns:
-        (texts, labels) lists
+        list of text strings
     """
     try:
         from datasets import load_dataset
@@ -70,7 +70,7 @@ def load_hf_dataset(dataset_name, split='train', text_col=None, label_col=None,
 
     # Auto-detect text column
     if text_col is None:
-        for candidate in ['text', 'sentence', 'review', 'content', 'tweet', 'prompt', 'question', 'body']:
+        for candidate in ['text', 'sentence', 'review', 'content', 'tweet', 'prompt', 'question', 'body', 'answer', 'definition', 'word']:
             if candidate in ds.column_names:
                 text_col = candidate
                 break
@@ -84,107 +84,43 @@ def load_hf_dataset(dataset_name, split='train', text_col=None, label_col=None,
             print("Specify with --text-col <column_name>")
             sys.exit(1)
 
-    # Auto-detect label column
-    if label_col is None:
-        for candidate in ['label', 'labels', 'category', 'class', 'target', 'rating', 'sentiment']:
-            if candidate in ds.column_names:
-                label_col = candidate
-                break
-        if label_col is None:
-            for col in ds.column_names:
-                if col != text_col and not isinstance(ds[0][col], str):
-                    label_col = col
-                    break
-        if label_col is None:
-            for col in ds.column_names:
-                if col != text_col:
-                    label_col = col
-                    break
-        if label_col is None:
-            print(f"Error: Could not auto-detect label column. Available: {ds.column_names}")
-            print("Specify with --label-col <column_name>")
-            sys.exit(1)
-
-    print(f"  Text column: '{text_col}', Label column: '{label_col}'")
+    print(f"  Text column: '{text_col}'")
 
     all_texts = [str(t) for t in ds[text_col]]
-    all_labels_raw = list(ds[label_col])
 
     import random as _rng
-    all_indices = list(range(len(all_texts)))
-    _rng.shuffle(all_indices)
+    _rng.shuffle(all_texts)
     if max_samples:
-        all_indices = all_indices[:max_samples * 3]
+        all_texts = all_texts[:max_samples]
+    if limit:
+        all_texts = all_texts[:limit]
 
-    texts = []
-    labels = []
-    for idx in all_indices:
-        if max_samples and len(texts) >= max_samples:
-            break
-        text = all_texts[idx]
-        label = all_labels_raw[idx]
-        if hasattr(label, '__class__') and 'ClassLabel' in str(type(label)):
-            label = int(label)
-        elif isinstance(label, str):
-            try:
-                label = int(label)
-            except ValueError:
-                if not hasattr(load_hf_dataset, '_label_map'):
-                    load_hf_dataset._label_map = {}
-                    load_hf_dataset._next_id = 0
-                if label not in load_hf_dataset._label_map:
-                    load_hf_dataset._label_map[label] = load_hf_dataset._next_id
-                    load_hf_dataset._next_id += 1
-                label = load_hf_dataset._label_map[label]
-        else:
-            label = int(label)
+    print(f"  Extracted {len(all_texts)} samples.")
 
-        if limit is not None and (label < 0 or label >= limit):
-            continue
-
-        texts.append(text)
-        labels.append(label)
-
-    unique_labels = sorted(set(labels))
-    if len(unique_labels) <= 20:
-        print(f"  Extracted {len(texts)} samples. Labels: {unique_labels}")
-    else:
-        print(f"  Extracted {len(texts)} samples. {len(unique_labels)} labels: {unique_labels[:5]}...{unique_labels[-5:]}")
-    if hasattr(load_hf_dataset, '_label_map') and load_hf_dataset._label_map:
-        lm = load_hf_dataset._label_map
-        preview = dict(list(lm.items())[:5])
-        print(f"  Label mapping: {len(lm)} classes. First 5: {preview}")
-
-    return texts, labels
+    return all_texts
 
 
 def load_csv(path):
-    """Load a CSV file with 'text' and 'label' columns."""
-    texts, labels = [], []
+    """Load a CSV file — returns list of text strings."""
+    texts = []
     with open(path, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
             text = row.get('text', row.get('Text', row.get('sentence', '')))
-            label = int(row.get('label', row.get('Label', row.get('category', 0))))
             texts.append(text)
-            labels.append(label)
-    return texts, labels
+    return texts
 
 
 def load_txt(path):
-    """Load a text file with 'text||label' format."""
-    texts, labels = [], []
+    """Load a text file — one text per line."""
+    texts = []
     with open(path, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
-            if not line or '||' not in line:
+            if not line:
                 continue
-            parts = line.rsplit('||', 1)
-            text = parts[0].strip().strip('"')
-            label = int(parts[1].strip())
-            texts.append(text)
-            labels.append(label)
-    return texts, labels
+            texts.append(line)
+    return texts
 
 
 def load_data(path):
@@ -199,14 +135,13 @@ def load_data_smart(args):
     """Load data from either file path or HuggingFace Hub.
 
     Args must have one of: --data (file path) or --hf (HF dataset name)
-    Optional: --text-col, --label-col, --split, --subset, --max-samples
+    Optional: --text-col, --split, --subset, --max-samples, --limit
     """
     if hasattr(args, 'hf') and args.hf:
         return load_hf_dataset(
             dataset_name=args.hf,
             split=getattr(args, 'split', 'train'),
             text_col=getattr(args, 'text_col', None),
-            label_col=getattr(args, 'label_col', None),
             subset=getattr(args, 'subset', None),
             max_samples=getattr(args, 'max_samples', None),
             limit=getattr(args, 'limit', None),
@@ -218,8 +153,8 @@ def load_data_smart(args):
         sys.exit(1)
 
 
-def split_data(texts, labels, val_ratio=0.2):
-    """Split into train/val."""
+def split_texts(texts, val_ratio=0.2):
+    """Split texts into train/val."""
     import random
     indices = list(range(len(texts)))
     random.shuffle(indices)
@@ -227,7 +162,5 @@ def split_data(texts, labels, val_ratio=0.2):
     val_idx = indices[:n_val]
     train_idx = indices[n_val:]
     train_t = [texts[i] for i in train_idx]
-    train_l = [labels[i] for i in train_idx]
     val_t = [texts[i] for i in val_idx]
-    val_l = [labels[i] for i in val_idx]
-    return train_t, train_l, val_t, val_l
+    return train_t, val_t

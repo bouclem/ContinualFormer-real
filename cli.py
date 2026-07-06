@@ -59,18 +59,19 @@ def main():
     p_train.add_argument('--task', type=int, required=True, help='Task ID (0-indexed)')
     p_train.add_argument('--model', default=None, help='Path to existing .pt to continue from')
     p_train.add_argument('--text-col', default=None, help='Text column name (auto-detect if omitted)')
-    p_train.add_argument('--label-col', default=None, help='Label column name (auto-detect if omitted)')
     p_train.add_argument('--split', default='train', help='HF dataset split (train, test, validation)')
     p_train.add_argument('--subset', default=None, help='HF dataset subset/config name')
     p_train.add_argument('--max-samples', type=int, default=None, help='Limit number of samples')
-    p_train.add_argument('--limit', type=int, default=None, help='Max label classes to keep (default: no limit)')
+    p_train.add_argument('--limit', type=int, default=None, help='Max samples to keep (default: no limit)')
 
     # predict
     p_pred = subparsers.add_parser('predict', help='Predict labels')
-    p_pred.add_argument('--text', default=None, help='Text to classify')
-    p_pred.add_argument('--file', default=None, help='File with one text per line')
-    p_pred.add_argument('--task', type=int, required=True, help='Task ID')
+    p_pred.add_argument('--text', default=None, help='Text prompt for generation')
+    p_pred.add_argument('--file', default=None, help='File with one prompt per line')
+    p_pred.add_argument('--task', type=int, default=0, help='Task ID')
     p_pred.add_argument('--model', default=None, help='Path to .pt file')
+    p_pred.add_argument('--max-tokens', type=int, default=50, help='Max tokens to generate')
+    p_pred.add_argument('--temperature', type=float, default=1.0, help='Sampling temperature (0 = greedy)')
 
     # eval
     p_eval = subparsers.add_parser('eval', help='Evaluate accuracy')
@@ -79,11 +80,10 @@ def main():
     p_eval.add_argument('--task', type=int, required=True, help='Task ID')
     p_eval.add_argument('--model', default=None, help='Path to .pt file')
     p_eval.add_argument('--text-col', default=None, help='Text column name (auto-detect if omitted)')
-    p_eval.add_argument('--label-col', default=None, help='Label column name (auto-detect if omitted)')
     p_eval.add_argument('--split', default='test', help='HF dataset split')
     p_eval.add_argument('--subset', default=None, help='HF dataset subset/config name')
     p_eval.add_argument('--max-samples', type=int, default=None, help='Limit number of samples')
-    p_eval.add_argument('--limit', type=int, default=None, help='Max label classes to keep (default: no limit)')
+    p_eval.add_argument('--limit', type=int, default=None, help='Max samples to keep (default: no limit)')
 
     # save
     p_save = subparsers.add_parser('save', help='Save model')
@@ -104,10 +104,12 @@ def main():
     # chat
     p_chat = subparsers.add_parser('chat', help='Chat / interactive prediction')
     p_chat.add_argument('chat_cmd', help='Chat command (predict, chat)')
-    p_chat.add_argument('--text', default=None, help='Text to classify')
-    p_chat.add_argument('--file', default=None, help='File with one text per line')
+    p_chat.add_argument('--text', default=None, help='Text prompt for generation')
+    p_chat.add_argument('--file', default=None, help='File with one prompt per line')
     p_chat.add_argument('--task', type=int, default=0, help='Task ID')
     p_chat.add_argument('--model', default=None, help='Path to .pt file')
+    p_chat.add_argument('--max-tokens', type=int, default=50, help='Max tokens to generate')
+    p_chat.add_argument('--temperature', type=float, default=1.0, help='Sampling temperature (0 = greedy)')
 
     # test
     subparsers.add_parser('test', help='Run model tests')
