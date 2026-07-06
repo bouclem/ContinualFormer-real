@@ -12,7 +12,7 @@ class TransformerLayer(nn.Module):
         self.ffn = FreezableFFN(dim, ffn_hidden, dropout)
         self.norm2 = nn.LayerNorm(dim)
 
-    def forward(self, x, mask=None):
-        x = x + self.attn(self.norm1(x), mask)
+    def forward(self, x, mask=None, causal=False):
+        x = x + self.attn(self.norm1(x), mask, causal=causal)
         x = x + self.ffn(self.norm2(x))
         return x

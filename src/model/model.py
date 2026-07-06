@@ -8,15 +8,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import PAD_ID, UNK_ID, MAX_VOCAB, ContinualConfig
-from .tokenizer import normalize_text, build_vocab
+from .config import PAD_ID, UNK_ID, BOS_ID, EOS_ID, MAX_VOCAB, ContinualConfig
+from .tokenizer import normalize_text, build_vocab, encode as tok_encode, decode as tok_decode
 from .layer import TransformerLayer
 
 
 class ContinualFormer(ContinualConfig):
     def __init__(self, device=None):
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-        self.vocab = {'<PAD>': PAD_ID, '<UNK>': UNK_ID}
+        self.vocab = {'<PAD>': PAD_ID, '<UNK>': UNK_ID, '<BOS>': BOS_ID, '<EOS>': EOS_ID}
         self.embedding = nn.Embedding(self.VOCAB_SIZE, self.DIM).to(self.device)
         with torch.no_grad():
             self.embedding.weight[PAD_ID].zero_()
@@ -25,30 +25,15 @@ class ContinualFormer(ContinualConfig):
             TransformerLayer(self.DIM, self.FFN_HIDDEN, self.HEADS, self.DROPOUT)
             for _ in range(self.LAYERS)
         ]).to(self.device)
-        self.heads = {}
+        self.lm_head = nn.Linear(self.DIM, self.VOCAB_SIZE).to(self.device)
         self.tasks_learned = []
-
-    def _get_or_create_head(self, task_id, num_classes=None):
-        if num_classes is None:
-            num_classes = self.CLASSES_PER_TASK
-        if task_id not in self.heads:
-            self.heads[task_id] = nn.Linear(self.DIM, num_classes).to(self.device)
-        elif self.heads[task_id].out_features < num_classes:
-            old_head = self.heads[task_id]
-            new_head = nn.Linear(self.DIM, num_classes).to(self.device)
-            with torch.no_grad():
-                new_head.weight[:old_head.out_features] = old_head.weight.data
-                new_head.bias[:old_head.out_features] = old_head.bias.data
-            self.heads[task_id] = new_head
-        return self.heads[task_id]
 
     def _all_modules(self):
         yield 'embedding', self.embedding
         yield 'pos_emb', self.pos_emb
         for i, l in enumerate(self.layers):
             yield f'layer{i}', l
-        for t in sorted(self.heads):
-            yield f'head{t}', self.heads[t]
+        yield 'lm_head', self.lm_head
 
     def _named_params(self):
         for pfx, m in self._all_modules():
@@ -65,34 +50,28 @@ class ContinualFormer(ContinualConfig):
         return sum(p.numel() for _, p in self._named_params() if p.requires_grad)
 
     def _encode(self, texts):
-        B = len(texts)
         ids_list = []
         mask_list = []
         for t in texts:
-            words = normalize_text(t)[:self.MAX_LEN]
-            row_ids = [self.vocab.get(w, UNK_ID) for w in words]
-            row_ids += [PAD_ID] * (self.MAX_LEN - len(row_ids))
-            ids_list.append(row_ids[:self.MAX_LEN])
-            m = [1.0] * min(len(words), self.MAX_LEN) + [0.0] * (self.MAX_LEN - min(len(words), self.MAX_LEN))
+            ids = tok_encode(t, self.vocab, max_len=self.MAX_LEN)
+            length = len(ids)
+            ids = ids + [PAD_ID] * (self.MAX_LEN - length)
+            ids_list.append(ids[:self.MAX_LEN])
+            m = [1.0] * min(length, self.MAX_LEN) + [0.0] * (self.MAX_LEN - min(length, self.MAX_LEN))
             mask_list.append(m)
         ids = torch.tensor(ids_list, dtype=torch.long, device=self.device)
         mask = torch.tensor(mask_list, dtype=torch.float, device=self.device)
         return ids, mask
 
-    def _forward(self, texts, task_id):
-        ids, mask = self._encode(texts)
-        return self._forward_ids(ids, mask, task_id)
-
-    def _forward_ids(self, ids, mask, task_id):
-        pos = torch.arange(self.MAX_LEN, device=self.device).unsqueeze(0).expand(ids.size(0), -1)
+    def _forward_ids(self, ids, mask):
+        pos = torch.arange(ids.size(1), device=self.device).unsqueeze(0).expand(ids.size(0), -1)
         x = self.embedding(ids) + self.pos_emb(pos)
         for layer in self.layers:
-            x = layer(x, mask)
-        pooled = (x * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp(min=1)
-        return self._get_or_create_head(task_id)(pooled)
+            x = layer(x, mask, causal=True)
+        return self.lm_head(x)
 
-    def _freeze_neurons_ids(self, ids, mask, task_id):
-        pos = torch.arange(self.MAX_LEN, device=self.device).unsqueeze(0).expand(ids.size(0), -1)
+    def _freeze_neurons_ids(self, ids, mask):
+        pos = torch.arange(ids.size(1), device=self.device).unsqueeze(0).expand(ids.size(0), -1)
         x = self.embedding(ids) + self.pos_emb(pos)
         frozen_count = 0
         for layer in self.layers:
@@ -100,7 +79,7 @@ class ContinualFormer(ContinualConfig):
             importance = layer.ffn.get_importance(h, mask).cpu()
             unfrozen = ~layer.ffn.frozen_mask
             if unfrozen.sum() == 0:
-                x = layer(x, mask)
+                x = layer(x, mask, causal=True)
                 continue
             unfrozen_imp = importance[unfrozen]
             n_freeze = max(1, int(unfrozen.sum().item() * self.FREEZE_RATIO))
@@ -109,12 +88,8 @@ class ContinualFormer(ContinualConfig):
             freeze_idx = unfrozen_idx[top_local]
             layer.ffn.freeze_neurons(freeze_idx)
             frozen_count += len(freeze_idx)
-            x = layer(x, mask)
+            x = layer(x, mask, causal=True)
         return frozen_count
-
-    def _freeze_neurons(self, texts, task_id):
-        ids, mask = self._encode(texts)
-        return self._freeze_neurons_ids(ids, mask, task_id)
 
     def _check_and_expand(self):
         expanded = False
