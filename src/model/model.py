@@ -128,16 +128,13 @@ class ContinualFormer(ContinualConfig):
             layer.ffn.freeze_neurons(old_frozen_idx)
         print(f"  Expanded FFN: {old_h} -> {new_h} neurons")
 
-    def train(self, texts, labels, task_id, val_texts=None, val_labels=None, verbose=True, checkpoint_path=None):
+    def train(self, texts, task_id, val_texts=None, verbose=True, checkpoint_path=None):
         old_vs = len(self.vocab)
         self.vocab = build_vocab(texts, max_vocab=self.VOCAB_SIZE, existing_vocab=self.vocab)
         if verbose:
             print(f"  Vocab: {old_vs} -> {len(self.vocab)} words")
-        num_classes = max(max(labels) + 1, self.CLASSES_PER_TASK)
-        self._get_or_create_head(task_id, num_classes)
         optimizer = torch.optim.Adam(self._all_param_list(), lr=self.LR)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.EPOCHS, eta_min=self.LR * 0.1)
-        y = torch.tensor(labels, dtype=torch.long, device=self.device)
         n = len(texts)
 
         all_ids, all_mask = self._encode(texts)
@@ -152,8 +149,7 @@ class ContinualFormer(ContinualConfig):
             self.pos_emb.train()
             for l in self.layers:
                 l.train()
-            for h in self.heads.values():
-                h.train()
+            self.lm_head.train()
             perm = torch.randperm(n)
             total_loss = 0.0
             nb = 0
@@ -161,10 +157,20 @@ class ContinualFormer(ContinualConfig):
                 bi = perm[i:i+self.BATCH_SIZE]
                 bx_ids = all_ids[bi]
                 bx_mask = all_mask[bi]
-                by = y[bi]
                 optimizer.zero_grad()
-                logits = self._forward_ids(bx_ids, bx_mask, task_id)
-                loss = F.cross_entropy(logits, by)
+                logits = self._forward_ids(bx_ids, bx_mask)
+                # Next-token prediction: predict token t+1 from token t
+                # Shift: input[:-1] -> target[1:]
+                shift_logits = logits[:, :-1, :].contiguous()
+                shift_targets = bx_ids[:, 1:].contiguous()
+                # Only compute loss on non-pad positions
+                shift_mask = bx_mask[:, 1:].contiguous()
+                loss = F.cross_entropy(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_targets.view(-1),
+                    reduction='none'
+                ).view(shift_targets.shape)
+                loss = (loss * shift_mask).sum() / shift_mask.sum().clamp(min=1)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
@@ -172,13 +178,13 @@ class ContinualFormer(ContinualConfig):
             scheduler.step()
             va = 0.0
             if val_ids is not None:
-                va = self._evaluate_ids(val_ids, val_mask, val_labels, task_id)
+                va = self._evaluate_ids(val_ids, val_mask)
             if verbose and (epoch % 10 == 0 or epoch == self.EPOCHS - 1):
                 tp = self.trainable_param_count()
-                print(f"  Task {task_id} Epoch {epoch:3d} | loss={total_loss/max(nb,1):.4f} | val_acc={va:.4f} | trainable={tp}")
+                print(f"  Task {task_id} Epoch {epoch:3d} | loss={total_loss/max(nb,1):.4f} | val_loss={va:.4f} | trainable={tp}")
             if checkpoint_path and (epoch + 1) % 10 == 0:
                 self.save(checkpoint_path)
-        frozen = self._freeze_neurons_ids(all_ids, all_mask, task_id)
+        frozen = self._freeze_neurons_ids(all_ids, all_mask)
         if verbose:
             print(f"  Frozen {frozen} neurons after task {task_id}")
         if self._check_and_expand() and verbose:
@@ -186,96 +192,72 @@ class ContinualFormer(ContinualConfig):
         if task_id not in self.tasks_learned:
             self.tasks_learned.append(task_id)
 
-    def _evaluate_ids(self, ids, mask, labels, task_id):
+    def _evaluate_ids(self, ids, mask):
         self.embedding.eval()
         self.pos_emb.eval()
         for l in self.layers:
             l.eval()
-        for h in self.heads.values():
-            h.eval()
-        correct = 0
-        total = 0
+        self.lm_head.eval()
+        total_loss = 0.0
+        total_tokens = 0
         with torch.no_grad():
-            for i in range(0, len(labels), 128):
+            for i in range(0, ids.size(0), 128):
                 bi = slice(i, i + 128)
                 bx_ids = ids[bi]
                 bx_mask = mask[bi]
-                by = torch.tensor(labels[i:i+128], dtype=torch.long, device=self.device)
-                pred = self._forward_ids(bx_ids, bx_mask, task_id).argmax(1)
-                correct += (pred == by).sum().item()
-                total += len(by)
+                logits = self._forward_ids(bx_ids, bx_mask)
+                shift_logits = logits[:, :-1, :].contiguous()
+                shift_targets = bx_ids[:, 1:].contiguous()
+                shift_mask = bx_mask[:, 1:].contiguous()
+                loss = F.cross_entropy(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_targets.view(-1),
+                    reduction='none'
+                ).view(shift_targets.shape)
+                total_loss += (loss * shift_mask).sum().item()
+                total_tokens += shift_mask.sum().item()
         self.embedding.train()
         self.pos_emb.train()
         for l in self.layers:
             l.train()
-        for h in self.heads.values():
-            h.train()
-        return correct / max(total, 1)
+        self.lm_head.train()
+        return total_loss / max(total_tokens, 1)
 
-    def evaluate(self, texts, labels, task_id):
+    def evaluate(self, texts):
+        ids, mask = self._encode(texts)
+        return self._evaluate_ids(ids, mask)
+
+    def generate(self, prompt, max_new_tokens=50, temperature=1.0):
         self.embedding.eval()
         self.pos_emb.eval()
         for l in self.layers:
             l.eval()
-        for h in self.heads.values():
-            h.eval()
-        correct = 0
-        total = 0
+        self.lm_head.eval()
+        ids = tok_encode(prompt, self.vocab, max_len=self.MAX_LEN)
+        if len(ids) >= self.MAX_LEN:
+            ids = ids[:self.MAX_LEN - 1]
         with torch.no_grad():
-            for i in range(0, len(texts), 128):
-                bt = texts[i:i+128]
-                by = torch.tensor(labels[i:i+128], dtype=torch.long, device=self.device)
-                pred = self._forward(bt, task_id).argmax(1)
-                correct += (pred == by).sum().item()
-                total += len(bt)
+            for _ in range(max_new_tokens):
+                x_ids = torch.tensor([ids], dtype=torch.long, device=self.device)
+                x_mask = torch.ones(1, len(ids), device=self.device)
+                logits = self._forward_ids(x_ids, x_mask)
+                next_logits = logits[0, -1, :] / max(temperature, 1e-8)
+                if temperature > 0:
+                    probs = F.softmax(next_logits, dim=-1)
+                    next_id = torch.multinomial(probs, 1).item()
+                else:
+                    next_id = next_logits.argmax().item()
+                if next_id == EOS_ID:
+                    break
+                ids.append(next_id)
+                if len(ids) >= self.MAX_LEN:
+                    break
         self.embedding.train()
         self.pos_emb.train()
         for l in self.layers:
             l.train()
-        for h in self.heads.values():
-            h.train()
-        return correct / max(total, 1)
-
-    def predict(self, texts, task_id):
-        single = isinstance(texts, str)
-        if single:
-            texts = [texts]
-        self.embedding.eval()
-        self.pos_emb.eval()
-        for l in self.layers:
-            l.eval()
-        for h in self.heads.values():
-            h.eval()
-        with torch.no_grad():
-            preds = self._forward(texts, task_id).argmax(1).cpu().numpy()
-        self.embedding.train()
-        self.pos_emb.train()
-        for l in self.layers:
-            l.train()
-        for h in self.heads.values():
-            h.train()
-        return int(preds[0]) if single else preds.tolist()
-
-    def predict_proba(self, texts, task_id):
-        single = isinstance(texts, str)
-        if single:
-            texts = [texts]
-        self.embedding.eval()
-        self.pos_emb.eval()
-        for l in self.layers:
-            l.eval()
-        for h in self.heads.values():
-            h.eval()
-        with torch.no_grad():
-            logits = self._forward(texts, task_id)
-            probs = F.softmax(logits, dim=-1).cpu().numpy()
-        self.embedding.train()
-        self.pos_emb.train()
-        for l in self.layers:
-            l.train()
-        for h in self.heads.values():
-            h.train()
-        return probs[0].tolist() if single else probs.tolist()
+        self.lm_head.train()
+        return tok_decode(ids, self.vocab)
 
     @staticmethod
     def _checkpoint_exists(path):
@@ -286,7 +268,7 @@ class ContinualFormer(ContinualConfig):
             'embedding': self.embedding.state_dict(),
             'pos_emb': self.pos_emb.state_dict(),
             'layers': [{n: m.state_dict() for n, m in l.named_children()} for l in self.layers],
-            'heads': {t: h.state_dict() for t, h in self.heads.items()},
+            'lm_head': self.lm_head.state_dict(),
             'tasks_learned': self.tasks_learned,
             'vocab': self.vocab,
             'frozen_masks': [l.ffn.frozen_mask.clone() for l in self.layers],
@@ -308,11 +290,13 @@ class ContinualFormer(ContinualConfig):
                 model.layers[i] = TransformerLayer(model.DIM, fh, model.HEADS, model.DROPOUT).to(model.device)
             for n, sd in ls.items():
                 dict(model.layers[i].named_children())[n].load_state_dict(sd)
-        for t, hs in state['heads'].items():
-            model._get_or_create_head(t)
-            model.heads[t].load_state_dict(hs)
-        model.tasks_learned = state['tasks_learned']
-        model.vocab = state.get('vocab', {'<PAD>': PAD_ID, '<UNK>': UNK_ID})
+        if 'lm_head' in state:
+            model.lm_head.load_state_dict(state['lm_head'])
+        elif 'heads' in state:
+            # Legacy checkpoint with classification heads — ignore
+            pass
+        model.tasks_learned = state.get('tasks_learned', [])
+        model.vocab = state.get('vocab', {'<PAD>': PAD_ID, '<UNK>': UNK_ID, '<BOS>': BOS_ID, '<EOS>': EOS_ID})
         for i, fm in enumerate(state['frozen_masks']):
             model.layers[i].ffn.frozen_mask = fm.to(model.device)
             frozen_indices = torch.where(fm)[0]
