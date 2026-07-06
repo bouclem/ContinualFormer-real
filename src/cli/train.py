@@ -35,7 +35,11 @@ def cmd_train(args):
     labels = [l for t, l in combined]
 
     print(f"Loaded {len(texts)} samples")
-    print(f"Labels: {sorted(set(labels))}")
+    unique = sorted(set(labels))
+    if len(unique) <= 20:
+        print(f"Labels: {unique}")
+    else:
+        print(f"Labels: {len(unique)} classes: {unique[:5]}...{unique[-5:]}")
 
     model_path = _resolve_model_path(args.model)
     model = ContinualFormer.load(model_path) if os.path.exists(model_path) else ContinualFormer()

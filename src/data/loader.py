@@ -144,7 +144,10 @@ def load_hf_dataset(dataset_name, split='train', text_col=None, label_col=None,
         labels.append(label)
 
     unique_labels = sorted(set(labels))
-    print(f"  Extracted {len(texts)} samples. Labels: {unique_labels}")
+    if len(unique_labels) <= 20:
+        print(f"  Extracted {len(texts)} samples. Labels: {unique_labels}")
+    else:
+        print(f"  Extracted {len(texts)} samples. {len(unique_labels)} labels: {unique_labels[:5]}...{unique_labels[-5:]}")
     if hasattr(load_hf_dataset, '_label_map') and load_hf_dataset._label_map:
         lm = load_hf_dataset._label_map
         preview = dict(list(lm.items())[:5])
