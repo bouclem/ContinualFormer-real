@@ -17,7 +17,7 @@ class ContinualFormer(ContinualConfig):
     def __init__(self, device=None):
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.vocab = {'<PAD>': PAD_ID, '<UNK>': UNK_ID, '<BOS>': BOS_ID, '<EOS>': EOS_ID}
-        self.embedding = nn.Embedding(self.VOCAB_SIZE, self.DIM).to(self.device)
+        self.embedding = nn.Embedding(self.INIT_VOCAB, self.DIM).to(self.device)
         with torch.no_grad():
             self.embedding.weight[PAD_ID].zero_()
         self.pos_emb = nn.Embedding(self.MAX_LEN, self.DIM).to(self.device)
@@ -25,7 +25,7 @@ class ContinualFormer(ContinualConfig):
             TransformerLayer(self.DIM, self.FFN_HIDDEN, self.HEADS, self.DROPOUT)
             for _ in range(self.LAYERS)
         ]).to(self.device)
-        self.lm_head = nn.Linear(self.DIM, self.VOCAB_SIZE).to(self.device)
+        self.lm_head = nn.Linear(self.DIM, self.INIT_VOCAB).to(self.device)
         self.tasks_learned = []
 
     def _all_modules(self):

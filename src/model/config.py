@@ -12,6 +12,7 @@ class ContinualConfig:
     HEADS = 2
     LAYERS = 2
     VOCAB_SIZE = MAX_VOCAB
+    INIT_VOCAB = 4
     MAX_LEN = 128
     FREEZE_RATIO = 0.3
     EXPAND_THRESHOLD = 0.2
