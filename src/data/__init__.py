@@ -4,7 +4,7 @@ from .loader import (
     load_data,
     load_hf_dataset,
     load_data_smart,
-    split_data,
+    split_texts,
 )
 
 __all__ = [
@@ -13,5 +13,5 @@ __all__ = [
     "load_data",
     "load_hf_dataset",
     "load_data_smart",
-    "split_data",
+    "split_texts",
 ]
