@@ -24,17 +24,13 @@ class LinearAttention(nn.Module):
             k = k * mask[:, None, :, None].float()
 
         if causal:
-            # Cumulative KV sum — O(1) per token, each position only sees past
-            kv = torch.zeros(B, H, Hd, Hd, device=x.device, dtype=x.dtype)
-            outputs = []
-            for t in range(L):
-                kv = kv + torch.einsum('bhd,bhv->bhdv', k[:, :, t], v[:, :, t])
-                q_t = q[:, :, t]
-                out_t = torch.einsum('bhd,bhdv->bhv', q_t, kv)
-                denom = torch.einsum('bhd,bhd->bh', q_t, k[:, :, :t+1].sum(dim=2)).clamp(min=1e-6)
-                out_t = out_t / denom.unsqueeze(-1)
-                outputs.append(out_t)
-            out = torch.stack(outputs, dim=2)
+            # Cumulative KV sum — O(n) vectorized, each position only sees past
+            kv_t = torch.einsum('bhld,bhlv->bhldv', k, v)
+            kv_cum = torch.cumsum(kv_t, dim=2)
+            qkv = torch.einsum('bhld,bhldv->bhlv', q, kv_cum)
+            k_cum = torch.cumsum(k, dim=2)
+            denom = torch.einsum('bhld,bhld->bhl', q, k_cum).clamp(min=1e-6)
+            out = qkv / denom.unsqueeze(-1)
         else:
             kv = torch.einsum('bhld,bhlv->bhdv', k, v)
             qkv = torch.einsum('bhld,bhdv->bhlv', q, kv)
