@@ -1,7 +1,9 @@
 PAD_ID = 0
 UNK_ID = 1
-MAX_VOCAB = 250
-MAX_LEN = 128
+BOS_ID = 2
+EOS_ID = 3
+MAX_VOCAB = 2000
+MAX_LEN = 256
 
 
 class ContinualConfig:
@@ -9,13 +11,12 @@ class ContinualConfig:
     FFN_HIDDEN = 128
     HEADS = 2
     LAYERS = 2
-    CLASSES_PER_TASK = 10
     VOCAB_SIZE = MAX_VOCAB
-    MAX_LEN = 48
+    MAX_LEN = 128
     FREEZE_RATIO = 0.3
     EXPAND_THRESHOLD = 0.2
     EXPAND_RATIO = 0.2
     EPOCHS = 50
     LR = 0.001
-    BATCH_SIZE = 64
+    BATCH_SIZE = 32
     DROPOUT = 0.1
