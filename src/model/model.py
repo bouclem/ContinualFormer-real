@@ -128,11 +128,32 @@ class ContinualFormer(ContinualConfig):
             layer.ffn.freeze_neurons(old_frozen_idx)
         print(f"  Expanded FFN: {old_h} -> {new_h} neurons")
 
+    def _resize_vocab(self, new_size):
+        old_size = self.embedding.num_embeddings
+        if new_size == old_size:
+            return
+        old_emb = self.embedding.weight.data.clone()
+        old_head_w = self.lm_head.weight.data.clone()
+        old_head_b = self.lm_head.bias.data.clone()
+        self.embedding = nn.Embedding(new_size, self.DIM).to(self.device)
+        self.lm_head = nn.Linear(self.DIM, new_size).to(self.device)
+        with torch.no_grad():
+            copy_n = min(old_size, new_size)
+            self.embedding.weight[:copy_n] = old_emb[:copy_n]
+            self.lm_head.weight[:copy_n] = old_head_w[:copy_n]
+            self.lm_head.bias[:copy_n] = old_head_b[:copy_n]
+            if new_size > old_size:
+                nn.init.xavier_uniform_(self.embedding.weight[old_size:])
+                nn.init.zeros_(self.lm_head.bias[old_size:])
+            self.embedding.weight[PAD_ID].zero_()
+
     def train(self, texts, task_id, val_texts=None, verbose=True, checkpoint_path=None):
         old_vs = len(self.vocab)
         self.vocab = build_vocab(texts, max_vocab=self.VOCAB_SIZE, existing_vocab=self.vocab)
         if verbose:
             print(f"  Vocab: {old_vs} -> {len(self.vocab)} words")
+        if len(self.vocab) > self.embedding.num_embeddings:
+            self._resize_vocab(len(self.vocab))
         optimizer = torch.optim.Adam(self._all_param_list(), lr=self.LR)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.EPOCHS, eta_min=self.LR * 0.1)
         n = len(texts)
@@ -282,6 +303,8 @@ class ContinualFormer(ContinualConfig):
     def load(cls, path, device=None):
         model = cls(device=device)
         state = torch.load(path, map_location=model.device)
+        ckpt_vocab_size = state['embedding']['weight'].shape[0]
+        model._resize_vocab(ckpt_vocab_size)
         model.embedding.load_state_dict(state['embedding'])
         model.pos_emb.load_state_dict(state['pos_emb'])
         for i, ls in enumerate(state['layers']):
