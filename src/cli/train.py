@@ -6,7 +6,7 @@ import os
 import sys
 
 from src.model.model import ContinualFormer
-from src.data.loader import load_data_smart, split_data
+from src.data.loader import load_data_smart, split_texts
 
 # Default checkpoint path
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,31 +27,23 @@ def cmd_info(args):
 
 
 def cmd_train(args):
-    texts, labels = load_data_smart(args)
-    combined = list(zip(texts, labels))
+    texts = load_data_smart(args)
     import random
-    random.shuffle(combined)
-    texts = [t for t, l in combined]
-    labels = [l for t, l in combined]
+    random.shuffle(texts)
 
     print(f"Loaded {len(texts)} samples")
-    unique = sorted(set(labels))
-    if len(unique) <= 20:
-        print(f"Labels: {unique}")
-    else:
-        print(f"Labels: {len(unique)} classes: {unique[:5]}...{unique[-5:]}")
 
     model_path = _resolve_model_path(args.model)
     model = ContinualFormer.load(model_path) if os.path.exists(model_path) else ContinualFormer()
 
-    train_t, train_l, val_t, val_l = split_data(texts, labels)
+    train_t, val_t = split_texts(texts)
     print(f"Train: {len(train_t)}, Val: {len(val_t)}")
 
-    model.train(train_t, train_l, task_id=args.task, val_texts=val_t, val_labels=val_l, checkpoint_path=model_path)
+    model.train(train_t, task_id=args.task, val_texts=val_t, checkpoint_path=model_path)
 
     if val_t:
-        acc = model.evaluate(val_t, val_l, args.task)
-        print(f"\nFinal validation accuracy: {acc:.4f}")
+        val_loss = model.evaluate(val_t)
+        print(f"\nFinal validation loss: {val_loss:.4f}")
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     model.save(model_path)
@@ -62,26 +54,26 @@ def cmd_predict(args):
     model = ContinualFormer.load(model_path) if os.path.exists(model_path) else ContinualFormer()
 
     if args.text:
-        pred = model.predict(args.text, task_id=args.task)
-        probs = model.predict_proba(args.text, task_id=args.task)
+        output = model.generate(args.text, max_new_tokens=getattr(args, 'max_tokens', 50),
+                                temperature=getattr(args, 'temperature', 1.0))
         print(f"Input: {args.text}")
-        print(f"Predicted label: {pred}")
-        print(f"Probabilities: {[f'{p:.3f}' for p in probs]}")
+        print(f"Generated: {output}")
     elif args.file:
         with open(args.file, 'r', encoding='utf-8') as f:
             texts = [line.strip() for line in f if line.strip()]
-        preds = model.predict(texts, task_id=args.task)
-        for t, p in zip(texts, preds):
-            print(f"  {p}  {t[:80]}")
+        for t in texts:
+            output = model.generate(t, max_new_tokens=getattr(args, 'max_tokens', 50),
+                                    temperature=getattr(args, 'temperature', 1.0))
+            print(f"  {output}")
 
 
 def cmd_eval(args):
-    texts, labels = load_data_smart(args)
+    texts = load_data_smart(args)
     model_path = _resolve_model_path(args.model)
     model = ContinualFormer.load(model_path) if os.path.exists(model_path) else ContinualFormer()
-    acc = model.evaluate(texts, labels, args.task)
+    val_loss = model.evaluate(texts)
     src = args.hf if hasattr(args, 'hf') and args.hf else args.data
-    print(f"Accuracy on {src} (task {args.task}): {acc:.4f} ({len(texts)} samples)")
+    print(f"Val loss on {src} (task {args.task}): {val_loss:.4f} ({len(texts)} samples)")
 
 
 def cmd_save(args):
@@ -94,11 +86,11 @@ def cmd_save(args):
 def cmd_demo(args):
     """Run a quick demo: train on 2 text tasks, show no forgetting."""
     print("=" * 60)
-    print("CONTINUAL TEXT MODEL — DEMO")
+    print("CONTINUALFORMER — GENERATIVE DEMO")
     print("=" * 60)
 
     model = ContinualFormer()
-    print(f"\nParameters: {model.param_count()} (grows to ~81K as tasks are added)")
+    print(f"\nParameters: {model.param_count()}")
     print(f"Device: {model.device}")
 
     task0_texts = [
@@ -124,8 +116,6 @@ def cmd_demo(args):
         "Horrible experience would not recommend",
     ] * 10
 
-    task0_labels = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] * 10
-
     task1_texts = [
         "The computer runs on new software",
         "Python programming is fun and useful",
@@ -137,60 +127,32 @@ def cmd_demo(args):
         "Programming languages evolve over time",
         "The database stores millions of records",
         "Machine learning models predict outcomes",
-        "The pizza tastes delicious and cheesy",
-        "I love eating sushi and ramen",
-        "The cake is sweet and fluffy",
-        "The restaurant serves great burgers",
-        "Cooking pasta is easy and fun",
-        "Fresh ingredients make better meals",
-        "The bakery sells amazing croissants",
-        "I enjoy trying new food recipes",
-        "The coffee shop has great pastries",
-        "Dinner at that place was wonderful",
-        "The team won the football match",
-        "Basketball is an exciting sport",
-        "The runner broke the world record",
-        "Tennis requires skill and focus",
-        "Swimming is good for your health",
-        "The soccer game was intense today",
-        "He trained hard for the marathon",
-        "The boxer knocked out his opponent",
-        "Yoga improves flexibility and strength",
-        "The hockey team made the playoffs",
-    ] * 5
+    ] * 10
 
-    task1_labels = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2] * 5
+    train0, val0 = split_texts(task0_texts, val_ratio=0.15)
+    train1, val1 = split_texts(task1_texts, val_ratio=0.15)
 
-    train0_t, train0_l, val0_t, val0_l = split_data(task0_texts, task0_labels, val_ratio=0.15)
-    train1_t, train1_l, val1_t, val1_l = split_data(task1_texts, task1_labels, val_ratio=0.15)
+    print(f"\n--- Training Task 0 (sentiment text) ---")
+    print(f"Train: {len(train0)}, Val: {len(val0)}")
+    model.train(train0, task_id=0, val_texts=val0, verbose=True)
 
-    print(f"\n--- Training Task 0 (sentiment) ---")
-    print(f"Train: {len(train0_t)}, Val: {len(val0_t)}")
-    model.train(train0_t, train0_l, task_id=0, val_texts=val0_t, val_labels=val0_l, verbose=True)
+    loss0_before = model.evaluate(task0_texts)
+    print(f"Task 0 val loss after training: {loss0_before:.4f}")
 
-    acc0_before = model.evaluate(task0_texts, task0_labels, task_id=0)
-    print(f"Task 0 accuracy after training: {acc0_before:.4f}")
+    print(f"\n--- Training Task 1 (tech text) ---")
+    print(f"Train: {len(train1)}, Val: {len(val1)}")
+    model.train(train1, task_id=1, val_texts=val1, verbose=True)
 
-    print(f"\n--- Training Task 1 (topics) ---")
-    print(f"Train: {len(train1_t)}, Val: {len(val1_t)}")
-    model.train(train1_t, train1_l, task_id=1, val_texts=val1_t, val_labels=val1_l, verbose=True)
-
-    acc1 = model.evaluate(task1_texts, task1_labels, task_id=1)
-    acc0_after = model.evaluate(task0_texts, task0_labels, task_id=0)
+    loss1 = model.evaluate(task1_texts)
+    loss0_after = model.evaluate(task0_texts)
     print(f"\n--- Results ---")
-    print(f"Task 0 accuracy: {acc0_before:.4f} → {acc0_after:.4f} (forgetting: {acc0_before - acc0_after:.4f})")
-    print(f"Task 1 accuracy: {acc1:.4f}")
+    print(f"Task 0 val loss: {loss0_before:.4f} -> {loss0_after:.4f} (forgetting: {loss0_after - loss0_before:.4f})")
+    print(f"Task 1 val loss: {loss1:.4f}")
 
-    print(f"\n--- Predictions ---")
-    test1 = "I really love this amazing product"
-    test2 = "This is terrible and I hate it"
-    test3 = "The computer runs Python fast"
-    test4 = "The pizza is delicious and cheesy"
-
-    print(f"  '{test1}' → sentiment: {model.predict(test1, task_id=0)}")
-    print(f"  '{test2}' → sentiment: {model.predict(test2, task_id=0)}")
-    print(f"  '{test3}' → topic: {model.predict(test3, task_id=1)}")
-    print(f"  '{test4}' → topic: {model.predict(test4, task_id=1)}")
+    print(f"\n--- Generation ---")
+    for prompt in ["I love", "This is terrible", "The computer", "Python is"]:
+        output = model.generate(prompt, max_new_tokens=20, temperature=0.7)
+        print(f"  '{prompt}' -> {output}")
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     demo_path = os.path.join(CHECKPOINT_DIR, 'demo_model.pt')
